@@ -26,13 +26,16 @@ struct MarkdownQuoteAlertTests {
         let firstParagraph = try #require(children.first as? Paragraph)
         let alert = try #require(
             MarkdownQuoteAlertType.detect(
-                from: MarkdownViewRenderer.plainText(of: firstParagraph)
+                from: firstParagraph
             )
         )
-        var bodyChildren = MarkdownViewRenderer.stripCalloutPrefix(
-            from: Array(firstParagraph.children),
+        var bodyChildren: [any Markup] = []
+        if let bodyParagraph = MarkdownViewRenderer.paragraphByStrippingCalloutPrefix(
+            from: firstParagraph,
             prefix: "[!\(alert.type.rawValue)]"
-        )
+        ) {
+            bodyChildren.append(bodyParagraph)
+        }
         bodyChildren.append(contentsOf: children.dropFirst())
         
         let renderedBody = bodyChildren
@@ -41,6 +44,53 @@ struct MarkdownQuoteAlertTests {
         
         #expect(alert.title == fixture.expectedTitle)
         #expect(renderedBody.contains(fixture.expectedFirstBodyParagraph))
+    }
+
+    @Test("Preserves mixed inline content in one alert body paragraph")
+    @MainActor
+    func preservesMixedInlineContentInOneAlertBodyParagraph() throws {
+        let document = Document(
+            parsing: """
+            > [!CAUTION]
+            > A body containing **bold text**, *italic text*, `inline code`,
+            > [a link](https://github.com), and ~~strikethrough text~~.
+            """
+        )
+        let blockQuote = try #require(document.child(through: 0) as? BlockQuote)
+        let paragraph = try #require(blockQuote.child(through: 0) as? Paragraph)
+
+        let bodyParagraph = try #require(
+            MarkdownViewRenderer.paragraphByStrippingCalloutPrefix(
+                from: paragraph,
+                prefix: "[!CAUTION]"
+            )
+        )
+
+        #expect(bodyParagraph.childCount > 1)
+        #expect(bodyParagraph.children.contains { $0 is Strong })
+        #expect(bodyParagraph.children.contains { $0 is Emphasis })
+        #expect(bodyParagraph.children.contains { $0 is InlineCode })
+        #expect(bodyParagraph.children.contains { $0 is Markdown.Link })
+        #expect(bodyParagraph.children.contains { $0 is Strikethrough })
+        #expect(
+            MarkdownViewRenderer.plainText(of: bodyParagraph)
+                == "A body containing bold text, italic text, inline code,\n"
+                    + "a link, and strikethrough text."
+        )
+    }
+
+    @Test("An unquoted blank line ends an alert blockquote")
+    func unquotedBlankLineEndsAlertBlockquote() {
+        let document = Document(
+            parsing: """
+            > [!WARNING]
+
+            > This is a separate blockquote.
+            """
+        )
+
+        #expect(document.childCount == 2)
+        #expect(document.children.allSatisfy { $0 is BlockQuote })
     }
     
     @Test(
@@ -111,28 +161,73 @@ struct MarkdownQuoteAlertTests {
         #expect(result == nil)
     }
     
-    @Test(
-        "Alert with custom title after marker is detected correctly"
-    )
-    func alertWithCustomTitleIsDetectedCorrectly() {
+    @Test("Rejects text after an alert marker on the same line")
+    func alertWithCustomTitleIsRejected() {
         let result = MarkdownQuoteAlertType.detect(from: "[!NOTE] Custom Title Here")
-        #expect(result?.type == .note)
-        #expect(result?.title == "Custom Title Here")
+        #expect(result == nil)
     }
     
-    @Test(
-        "Alert marker with extra whitespace is detected"
-    )
-    func alertMarkerWithExtraWhitespaceIsDetected() {
-        let result = MarkdownQuoteAlertType.detect(from: "[!WARNING]   Extra spaces  ")
+    @Test("Allows whitespace around a standalone alert marker")
+    func standaloneAlertMarkerWithExtraWhitespaceIsDetected() {
+        let result = MarkdownQuoteAlertType.detect(from: "  [!WARNING]   ")
         #expect(result?.type == .warning)
-        #expect(result?.title == "Extra spaces")
+        #expect(result?.title == "Warning")
+    }
+
+    @Test(
+        "Only detects a plain alert marker on its own line",
+        arguments: QuoteAlertSyntaxFixture.allCases
+    )
+    func onlyDetectsPlainStandaloneMarker(fixture: QuoteAlertSyntaxFixture) throws {
+        let document = Document(parsing: fixture.markdown)
+        let blockQuote = try #require(document.child(through: 0) as? BlockQuote)
+        let paragraph = try #require(blockQuote.child(through: 0) as? Paragraph)
+
+        let result = MarkdownQuoteAlertType.detect(from: paragraph)
+
+        #expect((result != nil) == fixture.isAlert)
     }
 }
 
 // MARK: - Fixtures
 
 extension MarkdownQuoteAlertTests {
+    enum QuoteAlertSyntaxFixture: CaseIterable {
+        case standaloneMarker
+        case inlineCodeMarker
+        case strongMarker
+        case textAfterMarker
+
+        var markdown: String {
+            switch self {
+                case .standaloneMarker:
+                """
+                > [!NOTE]
+                > Alert body.
+                """
+                case .inlineCodeMarker:
+                """
+                > `[!NOTE]` is the token used to create a GitHub alert.
+                > Place it on a dedicated line.
+                """
+                case .strongMarker:
+                """
+                > **[!WARNING]** is an example marker.
+                > This paragraph documents the syntax.
+                """
+                case .textAfterMarker:
+                """
+                > [!NOTE] Migration status
+                > Version 2 will be released on Monday.
+                """
+            }
+        }
+
+        var isAlert: Bool {
+            self == .standaloneMarker
+        }
+    }
+
     enum QuoteAlertBodyFixture: CaseIterable {
         case singleParagraph
         case multipleParagraphs

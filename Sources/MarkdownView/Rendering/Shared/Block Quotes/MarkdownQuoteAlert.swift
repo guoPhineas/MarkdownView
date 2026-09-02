@@ -36,7 +36,7 @@ enum MarkdownQuoteAlertType: String, CaseIterable {
         }
     }
 
-    /// Detects a quote alert type from the text of a blockquote's first paragraph.
+    /// Detects a quote alert type from a blockquote's first paragraph.
     ///
     /// Matches case-insensitively against:
     /// - `[!NOTE]`
@@ -45,8 +45,31 @@ enum MarkdownQuoteAlertType: String, CaseIterable {
     /// - `[!WARNING]`
     /// - `[!CAUTION]`
     ///
-    /// Text after the marker is used as a custom title.
-    static func detect(from text: String) -> (type: MarkdownQuoteAlertType, title: String)? {
+    /// The marker must be plain text and occupy the first line by itself. This
+    /// deliberately excludes marker-like text wrapped in inline Markdown, such
+    /// as code or strong emphasis.
+    static func detect(
+        from paragraph: Paragraph
+    ) -> (type: MarkdownQuoteAlertType, title: String)? {
+        let inlineChildren = Array(paragraph.children)
+        guard let markerText = inlineChildren.first as? Markdown.Text else {
+            return nil
+        }
+
+        if inlineChildren.count > 1 {
+            guard inlineChildren[1] is SoftBreak
+                    || inlineChildren[1] is LineBreak else {
+                return nil
+            }
+        }
+
+        return detect(fromMarker: markerText.string)
+    }
+
+    /// Detects an alert from a standalone marker string.
+    static func detect(
+        from text: String
+    ) -> (type: MarkdownQuoteAlertType, title: String)? {
         let firstLine = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(
@@ -55,21 +78,20 @@ enum MarkdownQuoteAlertType: String, CaseIterable {
                 whereSeparator: { $0.isNewline }
             )
             .first ?? ""
-        let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
+        return detect(fromMarker: String(firstLine))
+    }
+
+    private static func detect(
+        fromMarker marker: String
+    ) -> (type: MarkdownQuoteAlertType, title: String)? {
+        let trimmed = marker.trimmingCharacters(in: .whitespaces)
 
         // `NOTE` or `Note` can be also matched
         let uppercased = trimmed.uppercased()
 
         for type in Self.allCases {
-            let prefix = "[!\(type.rawValue)]"
-            if uppercased.hasPrefix(prefix) {
-                let suffix = trimmed.dropFirst(prefix.count)
-                guard suffix.isEmpty || suffix.first?.isWhitespace == true else {
-                    continue
-                }
-                let remaining = suffix.trimmingCharacters(in: .whitespaces)
-                let title = remaining.isEmpty ? type.defaultTitle : String(remaining)
-                return (type, title)
+            if uppercased == "[!\(type.rawValue)]" {
+                return (type, type.defaultTitle)
             }
         }
         return nil

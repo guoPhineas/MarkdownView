@@ -100,7 +100,7 @@ struct MarkdownViewRenderer: @preconcurrency MarkupVisitor {
         if quoteAlertEnabled,
            let firstParagraph = children.first as? Paragraph,
            let alert = MarkdownQuoteAlertType.detect(
-            from: Self.plainText(of: firstParagraph)
+               from: firstParagraph
            ) {
             return visitQuoteAlertBlockQuote(
                 blockQuote,
@@ -135,13 +135,12 @@ struct MarkdownViewRenderer: @preconcurrency MarkupVisitor {
         title: String
     ) -> MarkdownNodeView {
         var bodyChildren: [any Markup] = []
-        if let firstParagraph = children.first {
-            bodyChildren.append(
-                contentsOf: MarkdownViewRenderer.stripCalloutPrefix(
-                    from: Array(firstParagraph.children),
-                    prefix: "[!\(alertType.rawValue)]"
-                )
-            )
+        if let firstParagraph = children.first as? Paragraph,
+           let bodyParagraph = MarkdownViewRenderer.paragraphByStrippingCalloutPrefix(
+               from: firstParagraph,
+               prefix: "[!\(alertType.rawValue)]"
+           ) {
+            bodyChildren.append(bodyParagraph)
         }
         bodyChildren.append(contentsOf: children.dropFirst())
 
@@ -448,30 +447,35 @@ extension MarkdownViewRenderer {
         return markup.children.reduce(into: "") { $0 += plainText(of: $1) }
     }
 
-    /// Strips the quote-alert marker/title line from a paragraph's inline children.
-    /// Returns the inline children after the first soft or hard break.
-    static func stripCalloutPrefix(
-        from inlineChildren: [any Markup],
+    /// Strips the quote-alert marker line while preserving the remaining
+    /// inline nodes inside a paragraph.
+    static func paragraphByStrippingCalloutPrefix(
+        from paragraph: Paragraph,
         prefix: String
-    ) -> [any Markup] {
-        guard let markerIndex = inlineChildren.firstIndex(where: { child in
-            guard let text = child as? Markdown.Text else { return false }
-            return text.string.uppercased().hasPrefix(prefix.uppercased())
-        }) else {
-            return inlineChildren
+    ) -> Paragraph? {
+        let inlineChildren = Array(paragraph.children)
+        guard let marker = inlineChildren.first as? Markdown.Text,
+              marker.string.trimmingCharacters(in: .whitespaces)
+                .caseInsensitiveCompare(prefix) == .orderedSame else {
+            return nil
         }
 
-        let childrenAfterMarker = inlineChildren.dropFirst(markerIndex + 1)
+        let childrenAfterMarker = inlineChildren.dropFirst()
         guard let lineBreakIndex = childrenAfterMarker.firstIndex(where: {
             $0 is SoftBreak || $0 is LineBreak
         }) else {
-            return []
+            return nil
         }
 
-        return Array(
-            childrenAfterMarker.suffix(
+        let bodyChildren = childrenAfterMarker
+            .suffix(
                 from: childrenAfterMarker.index(after: lineBreakIndex)
             )
-        )
+            .compactMap { $0 as? any InlineMarkup }
+        guard bodyChildren.isEmpty == false else {
+            return nil
+        }
+
+        return Paragraph(bodyChildren)
     }
 }
